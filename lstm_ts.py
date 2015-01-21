@@ -345,7 +345,7 @@ def build_model(tparams, options):
     return use_noise, x, y, f_pred_prob, cost
 
 
-def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
+def pred_probs(f_pred_prob, prepare_data, data, iterator, model_options, verbose=False):
     """ If you want to use a trained model, this is useful to compute
     the probabilities of new examples.
     """
@@ -357,7 +357,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x,  y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None)
+                                  model_options['n_iter'],model_options['n_input'])
         pred_probs = f_pred_prob(x)
         probs[valid_index, :] = pred_probs
 
@@ -368,7 +368,7 @@ def pred_probs(f_pred_prob, prepare_data, data, iterator, verbose=False):
     return probs
 
 
-def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
+def pred_error(f_pred, prepare_data, data, iterator, model_options, verbose=False):
     """
     Just compute the error
     f_pred: Theano fct computing the prediction
@@ -376,15 +376,18 @@ def pred_error(f_pred, prepare_data, data, iterator, verbose=False):
     """
     valid_err = 0
     for _, valid_index in iterator:
-        x, y = prepare_data([data[0][t] for t in valid_index],
+        # TODO: This is not very efficient I should check
+        x,  y = prepare_data([data[0][t] for t in valid_index],
                                   numpy.array(data[1])[valid_index],
-                                  maxlen=None)
+                                  model_options['n_iter'],model_options['n_input'])
+
+
         preds = f_pred(x)
         targets = numpy.array(data[1])[valid_index]
-        valid_err += (preds == targets).sum()
-    valid_err = 1. - numpy.float32(valid_err) / len(data[0])
+        valid_err += tensor.mean((targets-preds.T)**2)
+    #valid_err = 1. - numpy.float32(valid_err) / len(data[0])
 
-    return valid_err
+    return valid_err.eval()
 
 
 def train_lstm(
@@ -533,9 +536,9 @@ def train_lstm(
 
                 if numpy.mod(uidx, validFreq) == 0:
                     use_noise.set_value(0.)
-                    train_err = pred_error(f_pred, prepare_data, train, kf)
-                    valid_err = pred_error(f_pred, prepare_data, valid, kf_valid)
-                    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+                    train_err = pred_error(f_pred_prob, prepare_data, train, kf, model_options)
+                    valid_err = pred_error(f_pred_prob, prepare_data, valid, kf_valid, model_options)
+                    test_err = pred_error(f_pred_prob, prepare_data, test, kf_test, model_options)
 
                     history_errs.append([valid_err, test_err])
 
@@ -573,9 +576,9 @@ def train_lstm(
         best_p = unzip(tparams)
 
     use_noise.set_value(0.)
-    train_err = pred_error(f_pred, prepare_data, train, kf)
-    valid_err = pred_error(f_pred, prepare_data, valid, kf_valid)
-    test_err = pred_error(f_pred, prepare_data, test, kf_test)
+    train_err = pred_error(f_pred, prepare_data, train, kf, model_options)
+    valid_err = pred_error(f_pred, prepare_data, valid, kf_validi, model_options)
+    test_err = pred_error(f_pred, prepare_data, test, kf_test, model_options)
 
     print 'Train ', train_err, 'Valid ', valid_err, 'Test ', test_err
 

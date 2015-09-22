@@ -7,10 +7,13 @@ import numpy
 import theano
 from numpy import genfromtxt
 from pandas import Series
+import datetime
+import csv
 
 #import matplotlib.pyplot as plt
 import sklearn.cross_validation as cv
 from sklearn import preprocessing
+
 
 def data_preprocessing(data):
     #data = data[51000:]
@@ -46,21 +49,50 @@ def data_preprocessing(data):
     return data,mean,std
 
 def read_data(path="AUDJPY_hour.csv", dir="/user/j/jgpavez/rnn_trading/data/",
-        max_len=30, valid_portion=0.1, columns=4, up=False, params_file='params.npz' ):
+        max_len=30, valid_portion=0.1, columns=4, up=False, params_file='params.npz',min=False):
 
     path = os.path.join(dir, path)
-
+    
+    #data = read_csv(path,delimiter=delimiter)
     data = genfromtxt(path, delimiter=',',skip_header=1)
+    if min == False:
+        date_index = 1
+        values_index = 3
+        hours = data[:,2]
+    else:
+        date_index = 0
+        values_index = 1
+    
+    dates = data[:,date_index]
+    days = numpy.array([datetime.datetime(int(str(date)[0:-2][0:4]),int(str(date)[0:-2][4:6]),
+                    int(str(date)[0:-2][6:8])).weekday() for date in dates])
+    months = numpy.array([datetime.datetime(int(str(date)[0:-2][0:4]),int(str(date)[0:-2][4:6]),
+                    int(str(date)[0:-2][6:8])).month for date in dates])
 
-    data = data[:,3:(3+columns)]
+    dates[:,date_index] = days
+
+    data = data[:,values_index:(values_index+columns)]
 
     data,mean,std = data_preprocessing(data)
 
     # Save data parameters
     numpy.savez(params_file, mean=mean, std=std)
 
-    x_data = numpy.array([data[i:i+max_len,:] for i in xrange(len(data)-max_len)])
-    y_data = numpy.array([data[i][3] for i in xrange(max_len , len(data))])
+    #x_data = numpy.array([data[i:i+max_len,:] for i in xrange(len(data)-max_len)])
+    #y_data = numpy.array([data[i][-1] for i in xrange(max_len , len(data))])
+
+    # Not consider jumps between days of market closing
+    #TODO: Here I'm just considering weekends, have to think about holydays
+    x_data = []
+    y_data = []
+    for i in xrange(len(data)-max_len):
+        #TODO: just working for max_len < 24
+        if (dates[i+max_len-1] == 4 and dates[i+max_len] <> 4):
+            continue
+        x_data.append(data[i:i+max_len,:]) 
+        y_data.append(data[i+max_len][-1])
+    x_data = numpy.array(x_data)
+    y_data = numpy.array(y_data)
 
     if up is True:
         y_data = y_data > x_data[:,-1,0]

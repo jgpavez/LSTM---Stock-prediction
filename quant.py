@@ -25,7 +25,7 @@ def data_preprocessing(data):
     #Put between 1 and 0
     return data 
 
-def read_data(path="table_a.csv", dir="/user/j/jgpavez/lstmTimeSerie/data/",
+def read_data(path="table_a.csv", dir="./data/",
         max_len=30, valid_portion=0.1, columns=4 ):
     path = os.path.join(dir, path)
 

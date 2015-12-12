@@ -1,5 +1,5 @@
 '''
-LSTM RNN for stock predictions
+LSTM RNN for forex predictions
 Based on sentiment analysis lstm found in deeplearning tutorials
 '''
 from collections import OrderedDict

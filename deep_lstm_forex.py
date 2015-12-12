@@ -1,5 +1,5 @@
 '''
-LSTM RNN for stock predictions
+Deep LSTM RNN for stock predictions
 Based on sentiment analysis lstm found in deeplearning tutorials
 '''
 from collections import OrderedDict
@@ -10,20 +10,15 @@ import sys
 import time
 import pdb
 import os
-import logging
 
 import numpy
 import theano
 import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 from theano.ifelse import ifelse
-from theano import config
 
 
 from forex import read_data, prepare_data
-
-def numpy_floatX(data):
-    return numpy.asarray(data, dtype=config.floatX)
 
 #### rectified linear unit
 def ReLU(x):
@@ -139,23 +134,26 @@ def param_init_lstm(options, params, prefix='lstm'):
 
     :see: init_params
     """
-    W = numpy.concatenate([ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj'])], axis=1)
-    params[_p(prefix, 'W')] = W.astype('float32')
-    U = numpy.concatenate([ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj']),
-                           ortho_weight(options['dim_proj'])], axis=1)
-    params[_p(prefix, 'U')] = U.astype('float32')
-    b = numpy.zeros((4 * options['dim_proj'],))
-    params[_p(prefix, 'b')] = b.astype('float32')
-
+    
+    for layer in xrange(options['nlayers']):
+        # Asuming all layers of same size
+        W = numpy.concatenate([ortho_weight(options['dim_proj']),
+                               ortho_weight(options['dim_proj']),
+                               ortho_weight(options['dim_proj']),
+                               ortho_weight(options['dim_proj'])], axis=1)
+        params[_p(prefix, 'W%d'%layer)] = W.astype('float32')
+        U = numpy.concatenate([ortho_weight(options['dim_proj']),
+                               ortho_weight(options['dim_proj']),
+                               ortho_weight(options['dim_proj']),
+                               ortho_weight(options['dim_proj'])], axis=1)
+        params[_p(prefix, 'U%d'%layer)] = U.astype('float32')
+        b = numpy.zeros((4 * options['dim_proj'],))
+        params[_p(prefix, 'b%d'%layer)] = b.astype('float32')
+       
     return params
 
 
-def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
+def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None, nlayers=1):
     nsteps = state_below.shape[0]
     if state_below.ndim == 3:
         n_samples = state_below.shape[1]
@@ -169,10 +167,11 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
             return _x[:, :, n*dim:(n+1)*dim]
         return _x[:, n*dim:(n+1)*dim]
 
-    def _step(x_, h_, c_):
-        preact = tensor.dot(h_, tparams[_p(prefix, 'U')])
+    def _step(x_, h_, c_, param_U, param_b):
+
+        preact = tensor.dot(h_, param_U)
         preact += x_
-        preact += tparams[_p(prefix, 'b')]
+        preact += param_b
 
         i = tensor.nnet.sigmoid(_slice(preact, 0, options['dim_proj']))
         f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim_proj']))
@@ -188,18 +187,23 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
         return h, c
 
-    state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
-                   tparams[_p(prefix, 'b')])
+    for layer in xrange(nlayers):
+        state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W%d'%layer)]) +
+                       tparams[_p(prefix, 'b%d'%layer)])
 
-    dim_proj = options['dim_proj']
-    rval, updates = theano.scan(_step,
-                                sequences=[state_below],
-                                outputs_info=[tensor.alloc(0., n_samples,
-                                                           dim_proj),
-                                              tensor.alloc(0., n_samples,
-                                                           dim_proj)],
-                                name=_p(prefix, '_layers'),
-                                n_steps=nsteps)
+        dim_proj = options['dim_proj']
+        #TODO: Scan over two sequences one for step and other for number of layer
+        rval, updates = theano.scan(_step,
+                                    sequences=[state_below],
+                                    outputs_info=[tensor.alloc(0.,n_samples,
+                                                               dim_proj),
+                                                  tensor.alloc(0.,n_samples,
+                                                               dim_proj)],
+                                    non_sequences=[tparams[_p(prefix,'U%d'%layer)],tparams[_p(prefix,'b%d'%layer)]],
+                                    name=_p(prefix, '_layer%d'%layer),
+                                    n_steps=nsteps)
+        state_below = rval[0]
+
     return rval[0]
 
 
@@ -208,7 +212,7 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 layers = {'lstm': (param_init_lstm, lstm_layer)}
 
 def mom_sgd(lr, tparams, grads, x, y, cost):
-    """ Momentum Stochastic Gradient Descent
+    """ Stochastic Gradient Descent
 
     :note: A more complicated version of sgd then needed.  This is
         done like that for adadelta and rmsprop.
@@ -368,7 +372,8 @@ def build_model(tparams, options):
         emb = dropout_layer(emb, use_noise, trng)
 
     proj = get_layer(options['encoder'])[1](tparams, emb, options,
-                                            prefix=options['encoder']
+                                            prefix=options['encoder'],
+                                            nlayers=options['nlayers']
                                             )
     
 
@@ -407,6 +412,7 @@ def pred_probs(f_pred, prepare_data, data, model_options, verbose=False):
 
     return pred
 
+
 def pred_error(f_pred, prepare_data, data, iterator, model_options, verbose=False):
     """
     Just compute the error
@@ -423,17 +429,16 @@ def pred_error(f_pred, prepare_data, data, iterator, model_options, verbose=Fals
 
         preds = f_pred(x)
         targets = numpy.array(data[1])[valid_index]
-        # or tensor.sum
-        valid_err += ((targets-preds.T)**2).sum()
+        valid_err += tensor.sum((targets-preds.T)**2)
     #valid_err = 1. - numpy.float32(valid_err) / len(data[0])
-    valid_err = numpy_floatX(valid_err) / len(data[0])    
+    valid_err = valid_err / len(data[0])    
 
-    return valid_err
+    return valid_err.eval()
 
 
 def R_score(f_pred, prepare_data, data, iterator, model_options, verbose=False):
     """
-    Compute R score
+    Just compute the error
     f_pred: Theano fct computing the prediction
     prepare_data: usual prepare_data for that dataset.
     """
@@ -496,8 +501,7 @@ def predict_lstm(input, model_options):
 
 
 def train_lstm(
-    #dim_proj=32,  # word embeding dimension and LSTM number of hidden units.
-    dim_proj=124,  # word embeding dimension and LSTM number of hidden units.
+    dim_proj=32,  # word embeding dimension and LSTM number of hidden units.
     patience=10,  # Number of epoch to wait before early stop if no progress
     max_epochs=150,  # The maximum number of epoch to run
     dispFreq=40,  # Display to stdout the training progress every N updates
@@ -506,12 +510,11 @@ def train_lstm(
     n_input = 4,  # Vocabulary size
     optimizer=mom_sgd,  # sgd,mom_sgs, adadelta and rmsprop available, sgd very hard to use, not recommanded (probably need momentum and decaying learning rate).
     encoder='lstm',  # TODO: can be removed must be lstm.
-    tick='hour',
-    validFreq=5,  # Compute the validation error after this number of update.
-    saveFreq=5,  # Save the parameters after every saveFreq updates
+    validFreq=20,  # Compute the validation error after this number of update.
+    saveFreq=20,  # Save the parameters after every saveFreq updates
     maxlen=100,  # Sequence longer then this get ignored
     batch_size=50,  # The batch size during training.
-    valid_batch_size=50,  # The batch size used for validation/test set.
+    valid_batch_size=64,  # The batch size used for validation/test set.
     exchange='AUDJPY',
 
     # Parameter for extra option
@@ -522,31 +525,27 @@ def train_lstm(
     sum_pool = False,
     mom_start = 0.5,
     mom_end = 0.99,
-    mom_epoch_interval = 60,
+    mom_epoch_interval = 300,
     learning_rate_decay=0.99995,
+    nlayers = 3,
     #learning_rate_decay=0.98,
     predict=False,
     input_pred=None
 ):
 
-    '''
-        Main function for LSTM training
-    '''
     model_path = "/user/j/jgpavez/rnn_trading/models/"
     data_path = "/user/j/jgpavez/rnn_trading/data/"
-    log_path = "/user/j/jgpavez/rnn_trading/logs/"
-
-
-    saveto = exchange + '_model.npz'
-    params_file = exchange + '_params.npz'
-    dataset = exchange + '_{0}.csv'.format(tick)
+    
+    saveto = exchange + '_model_deep.npz'
+    params_file = exchange + '_params_deep.npz'
+    dataset = exchange + '_hour.csv'
 
     saveto = os.path.join(model_path, saveto)
     params_file = os.path.join(data_path, params_file)
 
     ydim = 1
-    #n_iter = 10
-    n_iter = 24
+    n_iter = 50
+
     # Model options
     model_options = locals().copy()
 
@@ -557,7 +556,7 @@ def train_lstm(
     print "model options", model_options
 
     print 'Loading data'
-    train, valid, test, mean, std = read_data(max_len=n_iter, path=dataset, params_file=params_file,min=(tick=='minute'))
+    train, valid, test, mean, std = read_data(max_len=n_iter, path=dataset, params_file=params_file)
 
     #YDIM??
     #number of labels (output)
@@ -664,8 +663,7 @@ def train_lstm(
                     return 1., 1., 1.
 
                 if numpy.mod(uidx, dispFreq) == 0:
-                    with open(log_path + 'log_{0}_{0}.log'.format(dim_proj, n_iter), 'a') as log_file:
-                        log_file.write('Epoch {0} Update {1} Cost {2}\n'.format(eidx, uidx, cost))
+                    print 'Epoch ', eidx, 'Update ', uidx, 'Cost ', cost
 
             #decay
             #TODO: CHECK THIS LEARNING RATE
@@ -675,29 +673,20 @@ def train_lstm(
                 #train_err = pred_error(f_pred_prob, prepare_data, train, kf, model_options)
                 valid_err = pred_error(f_pred_prob, prepare_data, valid, kf_valid, model_options)
                 test_err = pred_error(f_pred_prob, prepare_data, test, kf_test, model_options)
-                #bckfr_err = backforecast(f_pred_prob, test, model_options)
-                #r2_score = R_score(f_pred_prob, prepare_data, test, kf_test, model_options)
-                bckfr_err = 0.
-                r2_score = 0.
+                bckfr_err = backforecast(f_pred_prob, test, model_options)
 
-                #history_errs.append([valid_err, test_err])
-                history_errs.append([valid_err, bckfr_err])
+                history_errs.append([valid_err, test_err])
 
                 if (eidx == 0 or
                     test_err <= numpy.array(history_errs)[:,
                                                            1].min()):
-                    #bckfr_err <= numpy.array(history_errs)[:,
-                    #                                       1].min()):
 
                     best_p = unzip(tparams)
                     bad_counter = 0
 
-                with open(log_path + 'log_{0}_{0}.log'.format(dim_proj, n_iter), 'a') as log_file:
-                    log_file.write('Valid {0} Test {1}\n'.format(valid_err,test_err))
-                print('Valid',valid_err,
+                print ('Valid ', valid_err,
                        'Test ', test_err, 
-                       'Backfore ', bckfr_err,
-                       'R2 score ', r2_score)
+                       'Backfore ', bckfr_err)
 
                 if (len(history_errs) > patience and
                     valid_err >= numpy.array(history_errs)[:-patience,
@@ -739,12 +728,9 @@ def train_lstm(
     #train_err = pred_error(f_pred_prob, prepare_data, train, kf, model_options)
     valid_err = pred_error(f_pred_prob, prepare_data, valid, kf_valid, model_options)
     test_err = pred_error(f_pred_prob, prepare_data, test, kf_test, model_options)
-    #bckfr_err = backforecast(f_pred_prob, test, model_options)
-    #r2_score = R_score(f_pred_prob, prepare_data, test, kf_test, model_options)
-    r2_score= 0.
-    bckfr_err = 0.
+    bckfr_err = backforecast(f_pred_prob, test, model_options)
 
-    print 'Valid ', valid_err, 'Test ', test_err, 'Backforecasting ', bckfr_err, ' R2 score: ', r2_score
+    print 'Valid ', valid_err, 'Test ', test_err, 'Backforecasting ', bckfr_err
 
     numpy.savez(saveto, train_err=train_err,
                 valid_err=valid_err, test_err=test_err,
@@ -763,18 +749,13 @@ if __name__ == '__main__':
     # The next line is the new Theano default. This is a speed up.
     #theano.config.scan.allow_gc = False
     exchange = 'AUDJPY'
-    tick = 'hour'
-    if len(sys.argv) >= 2:
+    if len(sys.argv) == 2:
         exchange = sys.argv[1]
-    if len(sys.argv) >= 3:
-        tick = sys.argv[2]
 
     # See function train for all possible parameter and there definition.
     train_lstm(
         #reload_model="lstm_model.npz",
         exchange=exchange,
-        max_epochs=20,
-        #max_epochs=162,
-        tick=tick
+        max_epochs=162,
     )
 

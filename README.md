@@ -8,7 +8,7 @@ The lstm-rnn should learn to predict the next day or minute based on previous da
 
 The neural network is implemented on Theano. 
 
-This code is under development.
+This code is not mantained anymore.
 
 
 
